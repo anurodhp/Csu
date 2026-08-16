@@ -253,6 +253,23 @@ start:
 L1: ldr     x4, [x3], #8
 	cmp     x4, #0              ; look for NULL ending env[] array
 	b.ne     L1
+	; Real Apple crt.c's own comment above documents that its _start()
+	; C function (which does `environ = envp;`) is legacy, pre-10.5-only
+	; code, gated behind `#if __DYNAMIC__ && OLD_LIBSYSTEM_SUPPORT` --
+	; genuinely dead in this build (neither macro defined) and NOT a
+	; bug: on real modern Darwin, dyld itself populates the `environ`
+	; global (via __program_vars/ProgramVars) before ever reaching this
+	; asm entry point. This project has no dyld (see architecture.md),
+	; so nothing else ever performs that real assignment -- confirmed
+	; via a real, empty preprocessed crt.c output for exactly this
+	; reason (docs/roadmap.md Phase 4.6 "Real environment variable
+	; plumbing"). One real store, matching exactly what dyld's own
+	; ProgramVars setup would have done for this one global (x2 still
+	; holds envp here, untouched by the scan loop above, which only
+	; mutates x3/x4).
+	adrp    x9, _environ@PAGE
+	add     x9, x9, _environ@PAGEOFF
+	str     x2, [x9]
 	bl      _main               ; main(x0=argc, x1=argv, x2=envp, x3=apple)
 	b       _exit
 
