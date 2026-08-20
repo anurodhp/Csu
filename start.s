@@ -270,6 +270,22 @@ L1: ldr     x4, [x3], #8
 	adrp    x9, _environ@PAGE
 	add     x9, x9, _environ@PAGEOFF
 	str     x2, [x9]
+	; Real __progname/NXArgc/NXArgv initialization (found+fixed
+	; 2026-08-20, same real "no dyld to populate ProgramVars" root cause
+	; as the _environ store just above -- see crt.c's own
+	; crt_init_program_vars() header comment for the full real-bug
+	; writeup). Save argc/argv/envp/apple across the real `bl` (AAPCS64
+	; x0-x17 are caller-saved, so a genuine C call clobbers them) into
+	; callee-saved x19-x22, restore after.
+	mov     x19, x0             ; argc
+	mov     x20, x1             ; argv
+	mov     x21, x2             ; envp
+	mov     x22, x3             ; apple
+	bl      _crt_init_program_vars   ; x0=argc, x1=argv already in place
+	mov     x0, x19
+	mov     x1, x20
+	mov     x2, x21
+	mov     x3, x22
 	bl      _main               ; main(x0=argc, x1=argv, x2=envp, x3=apple)
 	b       _exit
 

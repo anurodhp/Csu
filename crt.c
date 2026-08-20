@@ -44,6 +44,49 @@ const char**  NXArgv = NULL;
 const char**  environ = NULL;
 const char*   __progname = NULL;
 
+/* Real basename-of-argv[0] helper, matching Apple's own crt_basename()
+ * further down this file (real logic, just copied up here since that
+ * copy lives inside the `#if __DYNAMIC__ && OLD_LIBSYSTEM_SUPPORT` dead
+ * block below -- see this file's own "not needed for executables
+ * targeting 10.5 or later" comment: neither macro is ever defined for
+ * this project's static/no-dyld target, so NOTHING in that whole block,
+ * including _start() itself, is ever compiled in. That block was the
+ * ONLY code in this file that ever wrote __progname/NXArgc/NXArgv, which
+ * meant those three globals were permanently NULL/0 for every process on
+ * this target, always -- a real, universal bug (found 2026-08-20 via a
+ * real QEMU A/B instrumentation test: a spawned child's own argv[0], read
+ * directly in its own main(), was already correct, but getprogname()
+ * still read back "" from this file's own never-written __progname
+ * global -- see docs/roadmap.md/docs/historic/roadmap.md Phase 4 for the
+ * full transcript-backed writeup). Real Apple dyld would populate these
+ * three via ProgramVars (see crt_externs.c's real _program_vars_init(),
+ * also unreachable here for the same no-dyld reason) before ever
+ * reaching this static target's entry point; this project's own
+ * start.s (arm64) already does the equivalent one-off real store for
+ * `environ` (Phase 4.6 item 2) -- this is the same real fix for the
+ * remaining three globals, called from start.s right after that
+ * existing environ store. */
+static const char *
+crt0_basename(const char *path)
+{
+    const char *s;
+    const char *last = path;
+
+    for (s = path; *s != '\0'; s++) {
+        if (*s == '/') last = s + 1;
+    }
+
+    return last;
+}
+
+void
+crt_init_program_vars(int argc, const char **argv)
+{
+    NXArgc = argc;
+    NXArgv = argv;
+    __progname = (argv != NULL && argv[0] != NULL) ? crt0_basename(argv[0]) : "";
+}
+
 #if ADD_PROGRAM_VARS
 extern void* __dso_handle;
 struct ProgramVars
