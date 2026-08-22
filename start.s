@@ -282,6 +282,14 @@ L1: ldr     x4, [x3], #8
 	mov     x21, x2             ; envp
 	mov     x22, x3             ; apple
 	bl      _crt_init_program_vars   ; x0=argc, x1=argv already in place
+	; Real dyld responsibility (running __DATA,__mod_init_func
+	; constructors) this static/no-dyld target has to take over itself --
+	; see crt_run_static_initializers()'s own header comment in crt.c for
+	; the full real-bug writeup (2026-08-22, first tool needing
+	; __attribute__((constructor)) support). Must run after argc/argv/
+	; environ/__progname are all live (constructors may reasonably assume
+	; a fully-initialized libc) and before main().
+	bl      _crt_run_static_initializers
 	mov     x0, x19
 	mov     x1, x20
 	mov     x2, x21

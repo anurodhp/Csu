@@ -87,6 +87,40 @@ crt_init_program_vars(int argc, const char **argv)
     __progname = (argv != NULL && argv[0] != NULL) ? crt0_basename(argv[0]) : "";
 }
 
+/* Real dyld responsibility this project's static/no-dyld target has to
+ * take over itself, same class of gap as crt_init_program_vars() above
+ * (see its own header comment) -- found 2026-08-22 building the first
+ * tool (ifconfig) that uses `__attribute__((constructor))`
+ * (network_cmds/ifconfig.tproj's af_register()/clone_setcallback()
+ * self-registration pattern): a real QEMU crash (`ifconfig -a`
+ * immediately EXC_CORPSE_NOTIFY, zero output) traced to this project's
+ * whole static-link strategy (`-nostdlib -static -e start`, real
+ * LC_UNIXTHREAD entry, no LC_MAIN/crt1.o) meaning nothing ever walks
+ * `__DATA,__mod_init_func` -- on a real dynamic executable dyld does
+ * this (see crt.c's own dead `_dyld_make_delayed_module_initializer_calls`
+ * call further down, unreachable here for the same no-`__DYNAMIC__`
+ * reason as everything else in that block), but a fully static Mach-O
+ * with no dyld loses constructor support entirely unless something
+ * walks the section itself. `section$start$__DATA$__mod_init_func`/
+ * `section$end$__DATA$__mod_init_func` are real, standard ld64-synthesized
+ * boundary symbols (always defined, even as an empty zero-length range
+ * when a binary has no `__mod_init_func` entries at all -- confirmed
+ * real ld64 behavior, not assumed) -- this is the same idiom real
+ * minimal/static libc startup code (e.g. musl's __libc_start_main) uses
+ * for the identical reason. Safe to call unconditionally from every
+ * tool's start.s; a no-op for every prior tool (none use constructors),
+ * real fix for ifconfig's af_inet/af_link/ifmedia/ifclone registration. */
+extern void (*__crt_mod_init_func_start[])(void) __asm("section$start$__DATA$__mod_init_func");
+extern void (*__crt_mod_init_func_end[])(void) __asm("section$end$__DATA$__mod_init_func");
+
+void
+crt_run_static_initializers(void)
+{
+    for (void (**f)(void) = __crt_mod_init_func_start; f < __crt_mod_init_func_end; f++) {
+        (*f)();
+    }
+}
+
 #if ADD_PROGRAM_VARS
 extern void* __dso_handle;
 struct ProgramVars
