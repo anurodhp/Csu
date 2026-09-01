@@ -38,11 +38,79 @@
 
 /*
  * Global data definitions (initialized data).
+ *
+ * DAR-161 (iokit repo, 2026-08-31): real Apple's own crt.c/crt1.o is
+ * simply never linked into a modern (10.5+, non-OLD_LIBSYSTEM_SUPPORT)
+ * dynamic executable at all -- dyld supplies NXArgc/NXArgv/environ/
+ * __progname itself via ProgramVars before ever reaching main(). This
+ * project's start.s links Csu unconditionally, even into genuinely
+ * dynamically-linked (LC_LOAD_DYLINKER) executables, purely to carry a
+ * real LC_UNIXTHREAD past a real kernel bug (see build_dyld_test_exec.sh's
+ * own header comment: dyld's real load_dylinker() handoff overwrites this
+ * binary's own thread state/PC before start.s's `start:` label ever runs,
+ * so none of that code executes for a real dynamic target regardless).
+ * Before this fix, crt.c's unconditional STRONG definitions below still
+ * shadowed the real, canonical dyld-owned copies at STATIC LINK TIME: any
+ * dynamically-linked binary's own code that reads `environ`/`NXArgc`/
+ * `NXArgv`/`__progname` directly (not through getenv()/setenv(), which
+ * route through a separate real accessor) got bound to THIS translation
+ * unit's own always-NULL/0 local storage instead of the real one
+ * dyld's libdyldGlue.o exports from libdyld.dylib -- confirmed via `nm -m`
+ * on tools/userland_staging/dyld_test_exec.macho showing `(__DATA,
+ * __common) external _environ` etc. (a LOCAL definition) rather than an
+ * import/bind, even though `xcrun dyld_info -exports` on libdyld.dylib
+ * shows a real, distinct, separately-live `_environ`/`_NXArgc`/`_NXArgv`/
+ * `___progname` at different addresses.
+ *
+ * Fix mechanism: a NEW, project-owned macro, `CRT_DYNAMIC_LINKING`, NOT
+ * real Apple's own `__DYNAMIC__` (tried first, reverted -- see below).
+ * When a build script compiles this file with `-DCRT_DYNAMIC_LINKING`
+ * (genuinely dynamically-linked consumers only), these four globals
+ * become plain `extern` references instead of local definitions, so any
+ * direct read/write of them (including this file's own
+ * now-dead-for-dynamic-targets crt_init_program_vars()/start.s environ
+ * store, see start.s's own matching `#if !CRT_DYNAMIC_LINKING` guard)
+ * binds against the real dyld-owned copy via a normal chained-fixups
+ * bind, exactly like every other cross-image symbol reference in this
+ * project's dylib stack. The default (macro undefined) preserves
+ * today's local-storage behavior for every existing static consumer,
+ * unchanged -- same shape as round 11's `XLOCALE_STATE_EXPORTED` macro
+ * gate on `xlocale_private.h` (default hidden/unexported, only widened
+ * where actually intended).
+ *
+ * First attempt reused real Apple's own `__DYNAMIC__` macro instead of
+ * inventing a new one (reasoning: it's already used throughout the rest
+ * of this file for exactly this static-vs-dynamic distinction, and round
+ * 11's own precedent -- macro-gate a shared file's behavior -- doesn't
+ * dictate the macro's NAME). This was WRONG and caught before landing on
+ * any consumer: `echo | clang -isysroot <iPhoneOS SDK> -target
+ * arm64-apple-ios14.4 -dM -E - | grep __DYNAMIC__` shows clang predefines
+ * `__DYNAMIC__=1` UNCONDITIONALLY for this triple, regardless of
+ * `-static`/`-dynamic` -- a real, confirmed fact about this project's
+ * pinned Xcode-12/iPhoneOS-SDK toolchain, not the "PIC vs non-PIC
+ * codegen flag from the ppc/i386 era" meaning the rest of this file's
+ * existing `__DYNAMIC__` guards were written against. Confirmed via a
+ * real, minimal repro: `clang ... -c crt.c -o crt_static_test.o` (the
+ * exact flags every one of the ~46 real STATIC consumers already uses,
+ * zero -D flags added) then `nm crt_static_test.o` showed `U _NXArgc`/
+ * `U _NXArgv`/`U ___progname` -- i.e. the `#if !__DYNAMIC__` gate as
+ * first written would have silently flipped EVERY existing static
+ * consumer into extern/import mode too, which cannot resolve at a fully
+ * static `-static` link (no dylib, no chained fixups) -- a real, would-be
+ * regression across this entire project's static binary set, caught by
+ * testing the "unaffected" claim directly rather than assuming it.
  */
+#if !CRT_DYNAMIC_LINKING
 int           NXArgc = 0;
 const char**  NXArgv = NULL;
 const char**  environ = NULL;
 const char*   __progname = NULL;
+#else
+extern int           NXArgc;
+extern const char**  NXArgv;
+extern const char**  environ;
+extern const char*   __progname;
+#endif
 
 /* Real basename-of-argv[0] helper, matching Apple's own crt_basename()
  * further down this file (real logic, just copied up here since that

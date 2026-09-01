@@ -267,6 +267,35 @@ L1: ldr     x4, [x3], #8
 	; ProgramVars setup would have done for this one global (x2 still
 	; holds envp here, untouched by the scan loop above, which only
 	; mutates x3/x4).
+	;
+	; DAR-161 (iokit repo, 2026-08-31): this whole direct-store +
+	; crt_init_program_vars()/crt_run_static_initializers() sequence is
+	; the real, no-dyld-target replacement for what dyld's own ProgramVars
+	; setup + `_dyld_make_delayed_module_initializer_calls()` would do --
+	; correct ONLY when this file's own `start:` label is the real process
+	; entry point (this project's static, no-dyld consumers). For a
+	; genuinely dynamically-linked (LC_LOAD_DYLINKER) consumer, `_environ`/
+	; `_NXArgc`/`_NXArgv`/`___progname` are real dyld-owned imports (see
+	; crt.c's own matching `#if !CRT_DYNAMIC_LINKING` guard on these four
+	; globals -- a project-owned macro, NOT real Apple's `__DYNAMIC__`,
+	; which this project's pinned Xcode-12/iPhoneOS-SDK toolchain
+	; predefines unconditionally for every arm64-apple-ios* compile
+	; regardless of -static, confirmed via `clang -dM -E -`; see crt.c's
+	; own header comment for the full first-attempt-caught-it-first
+	; writeup) -- a direct `adrp`+`add` here would need a same-image,
+	; link-time-fixed address, which a cross-image dyld-bound symbol can
+	; never have (confirmed via a real link failure: `ld: fixup error
+	; (kind=arm64_adrp_lo12) ... target '_environ' does not have address`,
+	; the exact same failure class round 11 of this sweep hit for
+	; xlocale's hidden-visibility globals). Harmless to skip entirely for
+	; a dynamic target regardless: build_dyld_test_exec.sh's own header
+	; comment already documents that the kernel's real load_dylinker()
+	; handoff overwrites this binary's own thread state/PC before this
+	; `start:` label ever runs at all, so none of this code -- gated or
+	; not -- ever actually executes for a real dynamic consumer; real
+	; dyld's own entry point runs its own real ProgramVars/initializer
+	; setup instead, against the real dyld-owned copies.
+#if !CRT_DYNAMIC_LINKING
 	adrp    x9, _environ@PAGE
 	add     x9, x9, _environ@PAGEOFF
 	str     x2, [x9]
@@ -294,6 +323,7 @@ L1: ldr     x4, [x3], #8
 	mov     x1, x20
 	mov     x2, x21
 	mov     x3, x22
+#endif
 	bl      _main               ; main(x0=argc, x1=argv, x2=envp, x3=apple)
 	b       _exit
 
