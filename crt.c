@@ -181,9 +181,44 @@ crt_init_program_vars(int argc, const char **argv)
 extern void (*__crt_mod_init_func_start[])(void) __asm("section$start$__DATA$__mod_init_func");
 extern void (*__crt_mod_init_func_end[])(void) __asm("section$end$__DATA$__mod_init_func");
 
+/* DAR-164 fix (2026-09-01): real dyld guarantees libSystem_initializer
+ * installs a valid TPIDRRO_EL0/TSD base BEFORE any __mod_init_func
+ * constructor runs for a real dynamic executable -- this project's
+ * static/no-dyld path had no equivalent ordering guarantee, and it bit
+ * for real: Libc/locale/xlocale.c's own real __xlocale_init_constructor
+ * (itself a __mod_init_func entry, added 2026-08-27 for an earlier,
+ * unrelated bug) calls real pthread_key_init_np(), which -- for any
+ * consumer linking this project's real libpthread_tsd.c tier -- needs a
+ * valid TPIDRRO_EL0 (_pthread_lock_lock -> os_unfair_lock_lock_with_
+ * options -> _os_lock_owner_get_self -> _os_tsd_get_direct, real TSD
+ * slot 3/offset 0x18). Real, QEMU-confirmed SIGSEGV (fault addr exactly
+ * 0x18) found root-causing DAR-164 (login's post-exec crash): giving
+ * pthread_main_thread_bootstrap() itself a high constructor priority
+ * was tried first and did NOT work -- confirmed via a real otool -l:
+ * this project's own __mod_init_func entries land in plain link order,
+ * not priority order (ld64/this custom crt_run_static_initializers()
+ * loop above neither sorts nor honors the numeric priority; xlocale's
+ * object simply linked first). The only real, order-independent fix is
+ * to run this BEFORE the __mod_init_func loop at all, from crt.c
+ * itself -- the same real dyld guarantee, just implemented in the one
+ * place this target's own equivalent of "process bootstrap" already
+ * lives (this function). Declared weak_import (matching this SAME
+ * file's own established mach_init_routine/_cthread_init_routine
+ * optional-hook idiom below, adapted to a plain weak function rather
+ * than a weak pointer variable since pthread_main_thread_bootstrap is a
+ * real, directly-callable function, not one that goes through an
+ * indirect pointer slot) so every OTHER static consumer that does not
+ * link libpthread.a at all (pwtool, most of tools/userland_staging's
+ * simple_cmds binaries) is completely unaffected -- the call below
+ * becomes a real no-op for them, not a new hard dependency. */
+extern int pthread_main_thread_bootstrap(void) __attribute__((weak_import));
+
 void
 crt_run_static_initializers(void)
 {
+    if (pthread_main_thread_bootstrap) {
+        (void)pthread_main_thread_bootstrap();
+    }
     for (void (**f)(void) = __crt_mod_init_func_start; f < __crt_mod_init_func_end; f++) {
         (*f)();
     }
