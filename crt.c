@@ -216,8 +216,35 @@ extern int pthread_main_thread_bootstrap(void) __attribute__((weak_import));
 void
 crt_run_static_initializers(void)
 {
-    if (pthread_main_thread_bootstrap) {
-        (void)pthread_main_thread_bootstrap();
+    /* Called through a `volatile` local, NOT as a direct
+     * `pthread_main_thread_bootstrap()` call. Real bug found+fixed
+     * 2026-09-01 (DAR-153) in the version this replaces, whose own
+     * comment above claimed "every OTHER static consumer that does not
+     * link libpthread.a at all ... is completely unaffected -- the call
+     * below becomes a real no-op for them". That was not true: a direct
+     * call compiles to a real `bl`, and weak_import is a dylib-binding
+     * concept with no meaning in a fully `-static` link, so ld64 first
+     * rejects the link outright ("Undefined symbols ...") and then, if
+     * the symbol is forced undefined with -U, rejects it again with
+     * "b(l) ARM64 branch out of range ... to _pthread_main_thread_
+     * bootstrap (0x00000000)". Both failures reproduced for real
+     * (build_libplatform.sh); 12 of this project's build scripts link
+     * this file without libpthread.a and every one of them was broken by
+     * it -- the DAR-164 change was only ever exercised against
+     * consumers that do link libpthread.a.
+     *
+     * Routing the call through a volatile local forces clang to
+     * materialize the address (a GOT load, which for an absent
+     * weak_import is a real zero word) and then `blr` it, so the null
+     * guard actually gets a chance to run -- which is what makes this a
+     * genuine optional hook, and what the "weak pointer variable"
+     * mach_init_routine/_cthread_init_routine idiom below has always
+     * relied on. Static consumers still need -U for the symbol itself
+     * (see build_libplatform.sh's own comment); consumers that do link
+     * libpthread.a are unchanged, direct or indirect. */
+    int (* volatile bootstrap)(void) = pthread_main_thread_bootstrap;
+    if (bootstrap) {
+        (void)bootstrap();
     }
     for (void (**f)(void) = __crt_mod_init_func_start; f < __crt_mod_init_func_end; f++) {
         (*f)();
