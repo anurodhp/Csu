@@ -211,17 +211,20 @@ extern void (*__crt_mod_init_func_end[])(void) __asm("section$end$__DATA$__mod_i
  * link libpthread.a at all (pwtool, most of tools/userland_staging's
  * simple_cmds binaries) is completely unaffected -- the call below
  * becomes a real no-op for them, not a new hard dependency. */
-/* DAR-426 (iokit repo): libsystem_pthread.dylib no longer exports
+/* DAR-426 (iokit 77cc1e1): libsystem_pthread.dylib no longer exports
  * pthread_main_thread_bootstrap (a no-op since DAR-416's real
- * __pthread_init; iokit 77cc1e1). A dynamic consumer (CRT_DYNAMIC_LINKING)
- * never runs this function -- start.s:298 gates its only call site on
- * !CRT_DYNAMIC_LINKING and dyld runs the __mod_init_func constructors
- * itself -- but the dead function was still compiled and its weak_import
- * reference made every dynamic link fail "Undefined symbols:
- * _pthread_main_thread_bootstrap". Compile it (and the reference) out for
- * dynamic consumers; static consumers are unchanged. */
-#if !CRT_DYNAMIC_LINKING
+ * __pthread_init), so the weak_import reference below can no longer be
+ * satisfied by any dylib and every dynamic link failed "Undefined symbols:
+ * _pthread_main_thread_bootstrap". Dynamic consumers do not want the hook:
+ * dyld runs the __mod_init_func constructors itself and libSystem
+ * initializes pthread. It is compiled out when the build defines
+ * CRT_DYNAMIC_LINKING, or CRT_NO_PTHREAD_BOOTSTRAP (for dynamic images that
+ * keep this file's local NXArgc/environ definitions). Static consumers are
+ * unchanged. */
+#if !CRT_DYNAMIC_LINKING && !CRT_NO_PTHREAD_BOOTSTRAP
+#define CRT_PTHREAD_BOOTSTRAP_HOOK 1
 extern int pthread_main_thread_bootstrap(void) __attribute__((weak_import));
+#endif
 
 void
 crt_run_static_initializers(void)
@@ -252,15 +255,16 @@ crt_run_static_initializers(void)
      * relied on. Static consumers still need -U for the symbol itself
      * (see build_libplatform.sh's own comment); consumers that do link
      * libpthread.a are unchanged, direct or indirect. */
+#if CRT_PTHREAD_BOOTSTRAP_HOOK
     int (* volatile bootstrap)(void) = pthread_main_thread_bootstrap;
     if (bootstrap) {
         (void)bootstrap();
     }
+#endif
     for (void (**f)(void) = __crt_mod_init_func_start; f < __crt_mod_init_func_end; f++) {
         (*f)();
     }
 }
-#endif /* !CRT_DYNAMIC_LINKING */
 
 #if ADD_PROGRAM_VARS
 extern void* __dso_handle;
